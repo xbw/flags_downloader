@@ -17,6 +17,9 @@ from dataclasses import dataclass
 import ssl
 import io
 from PIL import Image
+import asyncio
+import aiohttp
+import aiofiles
 
 # 支持的所有尺寸选项
 VALID_SIZES = [
@@ -247,14 +250,14 @@ class AsyncFlagDownloader:
         self.include_country_name = include_country_name
         self.name_mapping = name_mapping or {}
         self.session = None
-        self.connector = None
+        self.ssl_context = None
         
     def _setup_ssl_context(self):
         """设置SSL上下文"""
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        return ssl_context
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+        return self.ssl_context
     
     async def download_single_flag(self, task: DownloadTask, output_dir: str, 
                                    force_redownload: bool = False) -> Tuple[bool, str]:
@@ -268,9 +271,6 @@ class AsyncFlagDownloader:
                 return True, f"文件已存在: {filename}"
         
         try:
-            import aiohttp
-            import aiofiles
-            
             flag_url = f"{task.base_url}{task.size}/{task.country_code}.{task.format}"
             
             async with self.session.get(flag_url, ssl=self.ssl_context, 
@@ -307,10 +307,7 @@ class AsyncFlagDownloader:
     async def download_batch(self, tasks: List[DownloadTask], output_dir: str, 
                             force_redownload: bool = False, max_retries: int = 2) -> Dict:
         """批量下载国旗图片"""
-        import asyncio
-        
-        start_time = time.time()
-        self.ssl_context = self._setup_ssl_context()
+        self._setup_ssl_context()
         
         connector = aiohttp.TCPConnector(ssl=self.ssl_context, limit=self.max_concurrent)
         timeout = aiohttp.ClientTimeout(total=self.timeout)
@@ -339,7 +336,7 @@ class AsyncFlagDownloader:
                     'success': [],
                     'failed': [],
                     'skipped': skipped_codes,
-                    'total_time': time.time() - start_time
+                    'total_time': 0
                 }
             
             all_success = []
@@ -422,11 +419,11 @@ class AsyncFlagDownloader:
                 'success': all_success,
                 'failed': all_failed,
                 'skipped': skipped_codes,
-                'total_time': time.time() - start_time
+                'total_time': 0
             }
 
 # ============================================================================
-# 同步下载器实现
+# 同步下载器实现（备用）
 # ============================================================================
 
 class SyncFlagDownloader:
@@ -503,7 +500,6 @@ class SyncFlagDownloader:
         """批量下载国旗图片（使用线程池）"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        start_time = time.time()
         self._setup_session()
         
         existing_files = get_existing_files(output_dir)
@@ -527,7 +523,7 @@ class SyncFlagDownloader:
                 'success': [],
                 'failed': [],
                 'skipped': skipped_codes,
-                'total_time': time.time() - start_time
+                'total_time': 0
             }
         
         all_success = []
@@ -600,7 +596,7 @@ class SyncFlagDownloader:
             'success': all_success,
             'failed': all_failed,
             'skipped': skipped_codes,
-            'total_time': time.time() - start_time
+            'total_time': 0
         }
 
 # ============================================================================
@@ -649,15 +645,8 @@ def print_filename_format_info():
     print("  simple: {国家代码}_{尺寸}.{格式} (默认)")
     print("  full: {国家代码}_{尺寸}_{宽度}x{高度}.{格式}")
 
-async def async_main(args, name_mapping: Dict[str, str]):
+async def async_main(args, country_codes, name_mapping):
     """异步主程序"""
-    import asyncio
-    
-    country_codes, _ = read_country_codes(args.file)
-    if not country_codes:
-        print("错误: 文件内容为空或没有有效的国家代码")
-        return
-    
     sizes = []
     if args.sizes:
         sizes = [s.strip() for s in args.sizes.split(',') if s.strip()]
@@ -667,7 +656,7 @@ async def async_main(args, name_mapping: Dict[str, str]):
                 sizes = [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
             print(f"错误: 找不到尺寸文件 {args.sizes_file}")
-            return
+            return None, 0
     
     if not sizes:
         sizes = get_default_sizes()
@@ -677,14 +666,14 @@ async def async_main(args, name_mapping: Dict[str, str]):
     invalid_sizes = [s for s in sizes if s not in VALID_SIZES]
     if invalid_sizes:
         print(f"错误: 不支持的尺寸: {invalid_sizes}")
-        return
+        return None, 0
     
     formats = [f.strip().lower() for f in args.formats.split(',') if f.strip()]
     invalid_formats = [f for f in formats if not validate_format(f)]
     if invalid_formats:
         print(f"错误: 不支持的图片格式: {invalid_formats}")
         print("支持的格式: png, webp, svg, jpg")
-        return
+        return None, 0
     
     print("=" * 60)
     print(f"国家数量: {len(country_codes)}")
@@ -725,12 +714,6 @@ async def async_main(args, name_mapping: Dict[str, str]):
     if args.include_country_name:
         estimated_time *= 1.05
     print(f"预计下载时间: {estimated_time/60:.1f} 分钟")
-    
-    if not args.yes:
-        confirm = input("\n是否开始下载? (y/n): ").lower()
-        if confirm != 'y':
-            print("下载已取消")
-            return
     
     all_results = {
         'success': [],
@@ -779,13 +762,8 @@ async def async_main(args, name_mapping: Dict[str, str]):
     
     return all_results, len(tasks)
 
-def sync_main(args, name_mapping: Dict[str, str]):
+def sync_main(args, country_codes, name_mapping):
     """同步主程序"""
-    country_codes, _ = read_country_codes(args.file)
-    if not country_codes:
-        print("错误: 文件内容为空或没有有效的国家代码")
-        return None, 0
-    
     sizes = []
     if args.sizes:
         sizes = [s.strip() for s in args.sizes.split(',') if s.strip()]
@@ -853,12 +831,6 @@ def sync_main(args, name_mapping: Dict[str, str]):
     if args.include_country_name:
         estimated_time *= 1.05
     print(f"预计下载时间: {estimated_time/60:.1f} 分钟")
-    
-    if not args.yes:
-        confirm = input("\n是否开始下载? (y/n): ").lower()
-        if confirm != 'y':
-            print("下载已取消")
-            return None, 0
     
     all_results = {
         'success': [],
@@ -1005,16 +977,18 @@ def main():
         print("所有支持的尺寸选项:")
         print("宽度固定 (w开头):")
         w_sizes = [s for s in VALID_SIZES if s.startswith('w')]
-        print("  " + ", ".join(w_sizes))
+        for size in w_sizes:
+            print(f"  {size}")
         
         print("\n高度固定 (h开头):")
         h_sizes = [s for s in VALID_SIZES if s.startswith('h')]
-        print("  " + ", ".join(h_sizes))
+        for size in h_sizes:
+            print(f"  {size}")
         
         print("\n精确尺寸 (宽度x高度):")
         exact_sizes = [s for s in VALID_SIZES if 'x' in s and not s.startswith(('w', 'h'))]
-        for i in range(0, len(exact_sizes), 5):
-            print("  " + ", ".join(exact_sizes[i:i+5]))
+        for size in exact_sizes:
+            print(f"  {size}")
         
         print(f"\n总计: {len(VALID_SIZES)} 个尺寸选项")
         print(f"\n默认尺寸: {', '.join(get_default_sizes())}")
@@ -1065,6 +1039,7 @@ def main():
                 print("文件格式: 每行一个国家的二位代码（小写），或使用 codes.json 格式")
                 return 1
     
+    # 只读取一次国家代码
     country_codes, name_mapping = read_country_codes(args.file)
     if not country_codes:
         print("错误: 文件内容为空或没有有效的国家代码")
@@ -1111,10 +1086,9 @@ def main():
     
     try:
         if args.mode == 'async':
-            import asyncio
-            all_results, total_tasks = asyncio.run(async_main(args, name_mapping))
+            all_results, total_tasks = asyncio.run(async_main(args, country_codes, name_mapping))
         else:
-            all_results, total_tasks = sync_main(args, name_mapping)
+            all_results, total_tasks = sync_main(args, country_codes, name_mapping)
         
         if all_results is not None:
             print_results(all_results, total_tasks, args.mode, start_time, args.filename_format, args.include_country_name)

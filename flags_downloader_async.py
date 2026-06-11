@@ -1,17 +1,22 @@
-import aiohttp
+#!/usr/bin/env python3
+"""
+国旗图片异步批量下载程序
+"""
+
 import asyncio
+import aiohttp
 import aiofiles
 import os
 import time
 import glob
 import sys
 import json
-from PIL import Image
 import ssl
 import argparse
 import urllib.request
 import io
 import re
+from PIL import Image
 from typing import List, Dict, Tuple, Set
 from dataclasses import dataclass
 from pathlib import Path

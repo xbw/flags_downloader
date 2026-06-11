@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+国旗图片同步批量下载程序（多线程版本）
+"""
+
 import os
 import time
 import glob
@@ -308,6 +313,8 @@ class SyncFlagDownloader:
     def download_batch(self, tasks: List[DownloadTask], output_dir: str, 
                        force_redownload: bool = False, max_retries: int = 2) -> Dict:
         """批量下载国旗图片（使用线程池）"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         start_time = time.time()
         self._setup_session()
         
